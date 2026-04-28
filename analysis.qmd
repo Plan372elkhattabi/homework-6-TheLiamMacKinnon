@@ -1,8 +1,221 @@
 ---
-title: PLAN 372
-author: Your Name
+title: PLAN 372 HW 6
+author: Liam MacKinnon
 ---
 
-Place your analysis code in this file; you must not rename it, though you may delete these instructions. Please update the block above with the name of the assignment and with your name.When you push your code to github, it will automatically be rendered for grading. You can see whether the automatic rendering worked in the "Actions" tab of the github repository.
+```{r setup, include=FALSE}
+library(tidyverse)
+```
 
-If you use any libraries other than `tidyverse`, `lubridate`, `sf`, `ggplot2`, `here`, `terra`, `ggspatial`, `rJavaEnv`, and `r5r`, add them to the list in the DESCRIPTION file.
+## Load Data
+
+```{r load-data}
+trees <- read_csv("TS3_Raw_tree_data.csv")
+```
+
+## Question 1: Sample sizes by state
+
+The `City` column contains both the city name and state abbreviation together, so I used a regular expression to split them into separate columns. The state abbreviation is always the last two uppercase letters, and the city name is everything before the comma.
+
+```{r q1}
+trees <- trees |>
+  mutate(
+    city_name  = str_trim(str_extract(City, "^[^,]+")),
+    state_abbr = str_trim(str_extract(City, "[A-Z]{2}$"))
+  )
+
+state_counts <- trees |>
+  count(state_abbr, name = "n_records") |>
+  arrange(desc(n_records))
+
+knitr::kable(state_counts, col.names = c("State", "Number of Records"),
+             caption = "Number of tree records per state")
+```
+
+```{r q1-plot}
+ggplot(state_counts, aes(x = reorder(state_abbr, n_records), y = n_records)) +
+  geom_col(fill = "#2E8B57") +
+  coord_flip() +
+  labs(
+    title = "Number of Urban Tree Records by State",
+    x = "State",
+    y = "Number of Records"
+  ) +
+  theme_minimal()
+```
+
+## Question 2: Cities in NC/SC
+
+Since the city wants data from North and South Carolina specifically, I filtered the dataset down to just those two states. All questions from here on use this filtered dataset.
+
+```{r q2}
+trees_nc_sc <- trees |>
+  filter(state_abbr %in% c("NC", "SC"))
+
+trees_nc_sc |>
+  distinct(state_abbr, city_name) |>
+  arrange(state_abbr, city_name) |>
+  knitr::kable(col.names = c("State", "City"),
+               caption = "Cities with tree data in NC and SC")
+```
+
+## Question 3: Genera with the largest crown diameter
+
+Scientific names follow binomial nomenclature, so the genus is always the first word. I extracted it with a regular expression and then calculated the average crown diameter per genus to find which genus provides the most shade.
+
+```{r q3}
+trees_nc_sc <- trees_nc_sc |>
+  mutate(genus = str_extract(ScientificName, "^\\S+"))
+
+genus_crown <- trees_nc_sc |>
+  filter(!is.na(`AvgCdia (m)`), `AvgCdia (m)` >= 0) |>
+  group_by(genus) |>
+  summarise(
+    avg_crown_diam_m = mean(`AvgCdia (m)`, na.rm = TRUE),
+    n = n()
+  ) |>
+  arrange(desc(avg_crown_diam_m))
+
+genus_crown |>
+  head(15) |>
+  knitr::kable(col.names = c("Genus", "Avg Crown Diameter (m)", "N Trees"),
+               digits = 2,
+               caption = "Top 15 genera by average crown diameter in NC/SC")
+```
+
+The genus with the largest average crown diameter is **`r genus_crown$genus[1]`** at **`r round(genus_crown$avg_crown_diam_m[1], 2)` meters**.
+
+```{r q3-plot}
+genus_crown |>
+  head(15) |>
+  ggplot(aes(x = reorder(genus, avg_crown_diam_m), y = avg_crown_diam_m)) +
+  geom_col(fill = "#4682B4") +
+  coord_flip() +
+  labs(
+    title = "Top 15 Tree Genera by Average Crown Diameter (NC/SC)",
+    x = "Genus",
+    y = "Average Crown Diameter (m)"
+  ) +
+  theme_minimal()
+```
+
+## Question 4: Tree age by genus
+
+Older trees naturally have more time to grow, so differences in average age between genera could explain some of the crown diameter differences we saw in Question 3. I calculated the average age and crown diameter for each genus to see if there is a pattern.
+
+```{r q4}
+genus_age <- trees_nc_sc |>
+  filter(!is.na(Age), Age >= 0,
+         !is.na(`AvgCdia (m)`), `AvgCdia (m)` >= 0) |>
+  group_by(genus) |>
+  summarise(
+    avg_age_yr     = mean(Age, na.rm = TRUE),
+    avg_crown_diam = mean(`AvgCdia (m)`, na.rm = TRUE),
+    n = n()
+  ) |>
+  arrange(desc(avg_age_yr))
+
+genus_age |>
+  knitr::kable(col.names = c("Genus", "Avg Age (yr)", "Avg Crown Diam (m)", "N Trees"),
+               digits = 2,
+               caption = "Average age and crown diameter by genus (NC/SC)")
+```
+
+```{r q4-plot}
+ggplot(genus_age, aes(x = avg_age_yr, y = avg_crown_diam, label = genus)) +
+  geom_point(aes(size = n), alpha = 0.6, color = "#8B4513") +
+  geom_text(vjust = -0.6, size = 2.8, check_overlap = TRUE) +
+  labs(
+    title = "Average Tree Age vs. Average Crown Diameter by Genus (NC/SC)",
+    x = "Average Age (years)",
+    y = "Average Crown Diameter (m)",
+    size = "N Trees"
+  ) +
+  theme_minimal()
+```
+
+There is a general positive relationship between age and crown diameter, so age does seem to partially explain the results from Question 3. That said, the relationship is not perfect, and some genera likely just grow faster or reach a larger size naturally.
+
+## AI Reflection
+
+I used Claude for this assignment, I find Claude one of the more reliable LLMs for programming and simple aesthetic choices. Mainly used for editing and refining. Explanations are my own. Less of an educational tool and more of a syntax and error solution. 
+
+## Extra Credit
+
+### Genera recommendation: large crown, grown quickly
+
+To find a genus that grows a large crown quickly, I divided average crown diameter by average age to get a rough growth rate. I only kept genera with at least 10 trees in the dataset since smaller samples are less reliable.
+
+```{r ec1}
+genus_growth_rate <- trees_nc_sc |>
+  filter(!is.na(Age), Age > 0,
+         !is.na(`AvgCdia (m)`), `AvgCdia (m)` >= 0) |>
+  group_by(genus) |>
+  summarise(
+    avg_age      = mean(Age, na.rm = TRUE),
+    avg_crown    = mean(`AvgCdia (m)`, na.rm = TRUE),
+    crown_per_yr = avg_crown / avg_age,
+    n = n()
+  ) |>
+  filter(n >= 10) |>
+  arrange(desc(crown_per_yr))
+
+genus_growth_rate |>
+  head(10) |>
+  knitr::kable(col.names = c("Genus", "Avg Age (yr)", "Avg Crown (m)",
+                              "Crown Growth Rate (m/yr)", "N Trees"),
+               digits = 3,
+               caption = "Top genera by crown growth rate (min. 10 trees, NC/SC)")
+```
+
+```{r ec1-plot}
+genus_growth_rate |>
+  head(10) |>
+  ggplot(aes(x = reorder(genus, crown_per_yr), y = crown_per_yr)) +
+  geom_col(fill = "#228B22") +
+  coord_flip() +
+  labs(
+    title = "Top Genera by Crown Growth Rate (NC/SC)",
+    subtitle = "Average crown diameter (m) per year of age; min. 10 trees",
+    x = "Genus",
+    y = "Crown Growth Rate (m/yr)"
+  ) +
+  theme_minimal()
+```
+
+Based on this, I would recommend **`r genus_growth_rate$genus[1]`**. It reaches an average crown diameter of `r round(genus_growth_rate$avg_crown[1], 2)` m in about `r round(genus_growth_rate$avg_age[1], 1)` years, giving it a growth rate of `r round(genus_growth_rate$crown_per_yr[1], 3)` m/yr, the highest of any genus with at least 10 trees sampled in NC/SC.
+
+### Species extraction
+
+The species is the second word in a scientific name, but there are a few edge cases to handle. Hybrid plants have an "x" between the genus and species that needs to be removed, cultivars add a name in quotes after the species, and some entries include a variety after the species (e.g. "var. silicicola"). The regex below handles all three cases by stripping the genus, removing any leading "x", and then grabbing just the first remaining word.
+
+```{r ec2}
+trees_species <- trees |>
+  mutate(
+    genus = str_extract(ScientificName, "^\\S+"),
+    species = ScientificName |>
+      str_remove("^\\S+\\s+") |>   # remove genus
+      str_remove("^x\\s+") |>      # remove hybrid "x "
+      str_extract("^\\S+")         # first remaining word = species
+                                   # (naturally drops 'var. ...' and quoted cultivars)
+  )
+
+# Verify the regex handles the edge cases correctly
+trees_species |>
+  filter(str_detect(ScientificName, " x |'|var\\.")) |>
+  distinct(ScientificName, genus, species) |>
+  head(10) |>
+  knitr::kable(caption = "Example extractions for complex scientific names")
+```
+
+```{r ec2-counts}
+trees_species |>
+  filter(!is.na(genus), !is.na(species),
+         !species %in% c("sp.", "spp.")) |>
+  group_by(genus) |>
+  summarise(n_species = n_distinct(species)) |>
+  arrange(desc(n_species)) |>
+  head(20) |>
+  knitr::kable(col.names = c("Genus", "Number of Species"),
+               caption = "Number of species per genus in the full dataset (top 20)")
+```
